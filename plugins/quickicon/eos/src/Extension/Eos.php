@@ -1,33 +1,29 @@
 <?php
 
 /**
- * @package        Joomla.Plugin
- * @subpackage     quickicon.eos
+ * @package     Joomla.Plugin
+ * @subpackage  Quickicon.eos
  *
- * @copyright      (C) 2023 Open Source Matters, Inc. <https://www.joomla.org>
- * @license        GNU General Public License version 2 or later; see LICENSE.txt
+ * @copyright   (C) 2023 Open Source Matters, Inc. <https://www.joomla.org>
+ * @license     GNU General Public License version 2 or later; see LICENSE.txt
  */
 
 namespace Joomla\Plugin\Quickicon\Eos\Extension;
 
-// phpcs:disable PSR1.Files.SideEffects
-\defined('_JEXEC') || die;
-// phpcs:enable PSR1.Files.SideEffects
-
 use Exception;
 use Joomla\CMS\Access\Exception\NotAllowed;
 use Joomla\CMS\Cache\CacheController;
-use Joomla\CMS\Document\Document;
 use Joomla\CMS\Factory;
 use Joomla\CMS\HTML\HTMLHelper;
 use Joomla\CMS\Language\Text;
 use Joomla\CMS\Plugin\CMSPlugin;
 use Joomla\Database\DatabaseAwareTrait;
-use Joomla\Event\DispatcherInterface;
 use Joomla\Event\SubscriberInterface;
 use Joomla\Module\Quickicon\Administrator\Event\QuickIconsEvent;
 
-use function defined;
+// phpcs:disable PSR1.Files.SideEffects
+\defined('_JEXEC') or die;
+// phpcs:enable PSR1.Files.SideEffects
 
 /**
  * Joomla! end of support notification plugin
@@ -42,7 +38,7 @@ final class Eos extends CMSPlugin implements SubscriberInterface
      * The EOS date for 4.4. and beyond
      *
      * @var    string
-     * @since 3.10.0
+     * @since __DEPLOY_VERSION__
      */
     public const EOS_DATE = '2023-10-25';
 
@@ -50,7 +46,7 @@ final class Eos extends CMSPlugin implements SubscriberInterface
      * Load the language file on instantiation.
      *
      * @var    bool
-     * @since 3.10.0
+     * @since __DEPLOY_VERSION__
      */
     protected $autoloadLanguage = true;
 
@@ -58,18 +54,18 @@ final class Eos extends CMSPlugin implements SubscriberInterface
      * Holding the current valid message to be shown
      *
      * @var    array
-     * @since 3.10.0
+     * @since __DEPLOY_VERSION__
      */
-    private $currentMessage = [];
+    private array $currentMessage = [];
 
     /**
-     * The document.
+     * Are the messages initialised
      *
-     * @var Document
-     *
-     * @since 3.10.0
+     * @var    bool
+     * @since __DEPLOY_VERSION__
      */
-    private Document $document;
+
+    private bool $messagesInitialized = false;
 
     /**
      * Returns an array of events this subscriber will listen to.
@@ -82,28 +78,8 @@ final class Eos extends CMSPlugin implements SubscriberInterface
     {
         return [
             'onGetIcons' => 'getEndOfServiceNotification',
+            'onAjaxEos'  => 'onAjaxEos',
         ];
-    }
-
-    /**
-     * Constructor
-     *
-     * @param   DispatcherInterface  $subject   The object to observe
-     * @param   Document             $document  The document
-     * @param   array                $config    An optional associative array of configuration settings.
-     *                                          Recognized key values include 'name', 'group', 'params', 'language'
-     *                                          (this list is not meant to be comprehensive).
-     *
-     * @since 3.10.0
-     */
-    public function __construct($subject, Document $document, array $config = [])
-    {
-        parent::__construct($subject, $config);
-        $this->document       = $document;
-        $diff                 = Factory::getDate()->diff(Factory::getDate(Eos::EOS_DATE));
-        $monthsUntilEOS       = floor($diff->days / 30.417);
-        $message              = $this->getMessageInfo($monthsUntilEOS, $diff->invert);
-        $this->currentMessage = $message;
     }
 
     /**
@@ -117,24 +93,13 @@ final class Eos extends CMSPlugin implements SubscriberInterface
      *
      * @return  void
      *
-     * @since   __DEPLOY_VERSION__
+     * @since __DEPLOY_VERSION__
      *
      * @throws Exception
      */
-    public function getEndOfServiceNotification(QuickIconsEvent $event)
+    public function getEndOfServiceNotification(QuickIconsEvent $event): void
     {
-        $context = $event->getContext();
-
-        if ($context !== $this->params->get('context', 'update_quickicon')) {
-            return;
-        }
-
-        if (!$this->shouldDisplayMessage()) {
-            return;
-        }
-
-        // No messages yet
-        if (!$this->currentMessage) {
+        if ($event->getContext() !== $this->params->get('context', 'update_quickicon') || !$this->shouldDisplayMessage() || !$this->messagesInitialized && $this::setMessage() == []) {
             return;
         }
 
@@ -147,12 +112,8 @@ final class Eos extends CMSPlugin implements SubscriberInterface
             }
             $this->getApplication()->enqueueMessage($messageText, $this->currentMessage['messageType']);
         }
-        try {
-            $this->document->getWebAssetManager()->registerAndUseScript('plg_quickicon_eos.script', 'plg_quickicon_eos/snooze.js', [], ['type' => 'module']);
-        } catch (Exception $e) {
-            echo $e->getMessage();
-            exit();
-        }
+
+        $this->getApplication()->getDocument()->getWebAssetManager()->registerAndUseScript('plg_quickicon_eos.script', 'plg_quickicon_eos/snooze.js', [], ['type' => 'module']);
         // The message as quickicon
         // Add the icon to the result array
         $result               = $event->getArgument('result', []);
@@ -179,37 +140,21 @@ final class Eos extends CMSPlugin implements SubscriberInterface
      *
      * @return  bool
      *
-     * @since 3.10.0
+     * @since __DEPLOY_VERSION__
      */
     private function saveParams(): bool
     {
-        $db    = Factory::getContainer()->get('DatabaseDriver');
-        $query = $db->getQuery(true)->update($db->quoteName('#__extensions'))->set($db->quoteName('params') . ' = ' . $db->quote($this->params->toString('JSON')))->where($db->quoteName('type') . ' = ' . $db->quote('plugin'))->where($db->quoteName('folder') . ' = ' . $db->quote('quickicon'))->where($db->quoteName('element') . ' = ' . $db->quote('eos'));
-        try {
-            // Lock the tables to prevent multiple plugin executions causing a race condition
-            $db->lockTable('#__extensions');
-        } catch (Exception $e) {
-            // If we can't lock the tables it's too risky to continue execution
-            return false;
-        }
-        try {
-            // Update the plugin parameters
-            $result = $db->setQuery($query)->execute();
-            $this->clearCacheGroups();
-        } catch (Exception $e) {
-            // If we failed to execute
-            $db->unlockTables();
-            $result = false;
-        }
-        try {
-            // Unlock the tables after writing
-            $db->unlockTables();
-        } catch (Exception $e) {
-            // If we can't lock the tables assume we have somehow failed
-            $result = false;
-        }
+        $params = $this->params->toString('JSON');
+        $db     = $this->getDatabase();
+        $query  = $db->getQuery(true)
+            ->update($db->quoteName('#__extensions'))
+            ->set($db->quoteName('params') . ' = :params')
+            ->where($db->quoteName('type') . ' = ' . $db->quote('plugin'))
+            ->where($db->quoteName('folder') . ' = ' . $db->quote('quickicon'))
+            ->where($db->quoteName('element') . ' = ' . $db->quote('eos'))
+            ->bind(':params', $params);
 
-        return $result;
+        return $db->setQuery($query)->execute();
     }
 
     /**
@@ -217,17 +162,18 @@ final class Eos extends CMSPlugin implements SubscriberInterface
      *
      * @return  bool
      *
-     * @since 3.10.0
+     * @since __DEPLOY_VERSION__
      *
      * @throws Exception
      */
     private function shouldDisplayMessage(): bool
     {
-        if (!$this->getApplication()->isClient('administrator') || Factory::getApplication()->getIdentity()->guest || $this->document->getType() !== 'html' || $this->getApplication()->input->getCmd('tmpl', 'index') === 'component' || $this->getApplication()->input->get('option') !== 'com_cpanel') {
-            return false;
-        }
-
-        return true;
+        return !$this->getApplication()->isClient('administrator')
+            || $this->getApplication()->getIdentity()->guest
+            || $this->getApplication()->getDocument()->getType() !== 'html'
+            || $this->getApplication()->getInput()->getCmd('tmpl', 'index') === 'component'
+            || $this->getApplication()->getInput()->get('option') !== 'com_cpanel'
+            ? false : true;
     }
 
     /**
@@ -236,9 +182,9 @@ final class Eos extends CMSPlugin implements SubscriberInterface
     *
     * @return  void
     *
-    * @since 3.10.0
+    * @since __DEPLOY_VERSION__
     */
-    private function clearCacheGroups()
+    private function clearCacheGroups(): void
     {
         $clearGroups  = ['com_plugins'];
         $cacheClients = [0, 1];
@@ -264,7 +210,7 @@ final class Eos extends CMSPlugin implements SubscriberInterface
      *
      * @return  array|bool  An array with the message to be displayed or false
      *
-     * @since 3.10.0
+     * @since __DEPLOY_VERSION__
      */
     private function getMessageInfo(int $monthsUntilEOS, int $inverted)
     {
@@ -342,13 +288,13 @@ final class Eos extends CMSPlugin implements SubscriberInterface
      *
      * @return  bool
      *
-     * @since 3.10.0
+     * @since __DEPLOY_VERSION__
      *
      * @throws Exception
      */
     private function isAllowedUser(): bool
     {
-        return Factory::getApplication()->getIdentity()->authorise('core.login.admin');
+        return $this->getApplication()->getIdentity()->authorise('core.login.admin');
     }
 
     /**
@@ -356,7 +302,7 @@ final class Eos extends CMSPlugin implements SubscriberInterface
      *
      * @return  string
      *
-     * @since 3.10.0
+     * @since __DEPLOY_VERSION__
      *
      * @throws  Notallowed  If user is not allowed.
      *
@@ -365,7 +311,7 @@ final class Eos extends CMSPlugin implements SubscriberInterface
     public function onAjaxEos(): string
     {
         // No messages yet so nothing to snooze
-        if (!$this->currentMessage) {
+        if (!$this->messagesInitialized && $this->setMessage() == []) {
             return '';
         }
         if (!$this->isAllowedUser()) {
@@ -374,9 +320,28 @@ final class Eos extends CMSPlugin implements SubscriberInterface
         // Make sure only snoozable messages can be snoozed
         if ($this->currentMessage['snoozable']) {
             $this->params->set('last_snoozed_id', $this->currentMessage['id']);
-            $saveok = $this->saveParams();
+            $this->saveParams();
         }
 
         return '';
+    }
+
+    /**
+     * setMessage
+     *
+     * Calculates how many days and selects correct message
+     *
+     * @return array
+     *
+     * @since  1.0
+     */
+    private function setMessage()
+    {
+        $diff                      = Factory::getDate()->diff(Factory::getDate(Eos::EOS_DATE));
+        $message                   = $this->getMessageInfo(floor($diff->days / 30.417), $diff->invert);
+        $this->currentMessage      = $message;
+        $this->messagesInitialized = true;
+
+        return $message;
     }
 }
